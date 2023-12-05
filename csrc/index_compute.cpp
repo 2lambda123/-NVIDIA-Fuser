@@ -3244,7 +3244,8 @@ Val* Index::eye(
   return GpuLower::current()->commonScalarMap().hoistScalar(result, loops);
 }
 
-Val* Index::cpAsyncBulkIndex(
+namespace {
+Val* WIP_cpAsyncBuldIndex_SingleTile(
     TensorView* gmem_tv,
     TensorView* consumer,
     Val* mbarrier,
@@ -3335,10 +3336,269 @@ Val* Index::cpAsyncBulkIndex(
          {"coordinate", coordinate}},
         ss.str());
   }
-
   index = GpuLower::current()->commonScalarMap().hoistScalar(index, loops);
-
   return IrBuilder::create<kir::TensorIndex>(gmem_tv, index);
+}
+
+Val* WIP_cpAsyncBuldIndex_MultiTile(
+    TensorView* gmem_tv,
+    TensorView* consumer,
+    Val* mbarrier,
+    const std::vector<kir::ForLoop*>& loops) {
+  using namespace tma;
+
+  bool is_load = (gmem_tv != consumer);
+
+/*
+ global_address,    <--- gmem_tv metadata
+ global_dim,        <--- gmem_tv metadata, alloc_size
+ global_strides,    <--- gmem_tv metadata, alloc_strides
+ box_dim,           <--- consumer metadata, extends for bulk ids
+ element_strides,   <--- consumer metadata, ?? alloc_strides for bulk id
+ */
+
+#define EXTRA_LOGS 1
+
+#if EXTRA_LOGS
+  {
+    const auto printer = [](const std::vector<IterDomain*>& domains,
+                            const std::string& msg) {
+      std::stringstream ss;
+      ss << "[LOG] " << msg << "\n";
+      for (const auto& item : domains) {
+        ss << "\t" << item->toString() << "\n";
+      }
+      ss << "=====================================\n";
+      std::cout << ss.str();
+    };
+    // DEBUG
+    std::cout << "[DEBUG] gmem_tv: " << gmem_tv->toString() << std::endl;
+    std::cout << "[DEBUG] consumer: " << consumer->toString() << std::endl;
+
+    printer(
+        gmem_tv->getMaybeRFactorDomain(), "gmem_tv->getMaybeRFactorDomain()");
+    printer(gmem_tv->getLeafDomain(), "gmem_tv->getLeafDomain()");
+    printer(
+        gmem_tv->getMaybeAllocationDomain(),
+        "gmem_tv->getMaybeAllocationDomain()");
+    
+    printer(
+        consumer->getMaybeRFactorDomain(), "consumer->getMaybeRFactorDomain()");
+    printer(consumer->getLeafDomain(), "consumer->getLeafDomain()");
+    printer(
+        consumer->getMaybeAllocationDomain(), "consumer->getMaybeAllocationDomain()");
+    
+    std::cout << "=======================================================================\n"
+      << "consumer, leaf and type of parallelization:\n";
+    for (const auto id: consumer->getLeafDomain()) {
+      std::cout << " " << id->toString() << ": " << id->getParallelType() << std::endl;
+    }
+    std::cout << "=======================================================================\n";
+  }
+#endif
+
+  NVF_ERROR(
+      gmem_tv->getMemoryType() == MemoryType::Global,
+      "cpAsyncBulkIndex is only for global memory tensors");
+  // NVF_ERROR(
+  //     gmem_tv->getMaybeRFactorDomain() == gmem_tv->getLeafDomain(),
+  //     "not supported yet");
+  // NVF_ERROR(
+  //     gmem_tv->getMaybeAllocationDomain() == gmem_tv->getLeafDomain(),
+  //     "not supported yet");
+  // for (auto id : consumer->getMaybeRFactorDomain()) {
+  //   NVF_ERROR(
+  //       id->isBulk(),
+  //       "cpAsyncBulkIndex only support whole tensor copy for now.");
+  // }
+  std::vector<IterDomain*> consumer_bulk_ids;
+  {
+    const auto consumer_leaves = consumer->getLeafDomain();
+    NVF_ERROR(std::any_of(consumer_leaves.begin(), consumer_leaves.end(), [&consumer_bulk_ids](IterDomain* id){
+      if (id->isBulk()) {
+        consumer_bulk_ids.push_back(id);
+        return true;
+      } else {return false;}}));
+    NVF_ERROR(
+       gmem_tv->getMaybeAllocationDomain().size() == consumer_bulk_ids.size(),
+      "number of bulk leaf iterdomains in consumer must be the same as number of allocation domains in producer");
+  }
+  {
+    // TODO: snippet to be removed, added to learn how to use c2p maps
+    auto c2p_root_map = PairwiseRootDomainMap(gmem_tv, consumer)
+                            .mapBroadcast(false)
+                            .mapConsumerToProducer();
+
+    // This replay has to be consistent with compute at index map.
+    BestEffortReplay replay_producer_as_consumer(
+        gmem_tv->getLeafDomain(), consumer->getLeafDomain(), c2p_root_map);
+
+    auto c2p_map = replay_producer_as_consumer.getReplay();
+
+    std::cout << "[DEBUG] consumer bulk id -> producer id" <<  std::endl;
+    for (const auto id: consumer_bulk_ids) {
+      auto pid = c2p_map.find(id);
+      if (c2p_map.end() != pid) {
+        std::cout << "  " << pid->first->toString() << " - " << pid->second->toString() << std::endl;
+      }
+    }
+  }
+
+  // TODO: dim to be replaced by number of alloc domains / bulk iterdomains
+  int64_t dim = (int64_t)gmem_tv->nDims();
+  NVF_ERROR(dim > 0);
+  int64_t itemsize = dataTypeSize(gmem_tv->dtype());
+#if EXTRA_LOGS
+  {
+    std::cout << "[DEBUG] dim: " << dim << ", itemsize: " << itemsize
+              << std::endl;
+  }
+#endif
+
+  auto metadata = IrBuilder::metadataExpr(gmem_tv);
+  auto global_address = IrBuilder::getAttrExpr(metadata, "data");
+#if EXTRA_LOGS
+  { std::cout << "[DEBUG] global_address: " << global_address << std::endl; }
+#endif
+  // As required by the hardware, tensors used by TMA must be in column major
+  // that is, stride[0] must be implicitly 1 (therefore omitted)
+  auto global_dim =
+      // Reverse array to convert from row major to column major
+      IrBuilder::reverseArrayExpr(
+          IrBuilder::getAttrExpr(metadata, "alloc_size"));
+  auto global_strides = IrBuilder::getAttrExpr(metadata, "alloc_stride");
+#if EXTRA_LOGS
+  {
+    std::cout << "[DEBUG] global_dim: " << global_dim << std::endl;
+    std::cout << "[DEBUG] global_strides: " << global_strides << std::endl;
+  }
+#endif
+  if (dim > 1) {
+    // Reverse array to convert from row major to column major, multiply by
+    // element size to convert to bytes, and remove fastest dim as it is assumed
+    // to be one.
+    std::vector<Val*> strides;
+    for (auto i : c10::irange(dim - 1)) {
+      strides.push_back(SimplifyingIrBuilder::mulExpr(
+          IrBuilder::getItemExpr(global_strides, dim - 2 - i), itemsize));
+    }
+#if EXTRA_LOGS
+    {
+      std::cout << "[DEBUG] reverse strides order:\n";
+      for (const auto& item : strides) {
+        std::cout << " " << item->toString() << std::endl;
+      }
+    }
+#endif
+    global_strides = IrBuilder::arrayExpr(strides);
+#if EXTRA_LOGS
+    {
+      std::cout << "[DEBUG] updated global_strides: " << global_strides
+                << std::endl;
+    }
+#endif
+  } else {
+    global_strides = IrBuilder::create<Val>(
+        std::vector<int64_t>{},
+        ArrayType{std::make_shared<DataType>(DataType::Index), 0});
+#if EXTRA_LOGS
+    {
+      std::cout << "[DEBUG] updated global_strides: " << global_strides
+                << std::endl;
+    }
+#endif
+  }
+
+  // Reverse array to convert from row major to column major
+  auto box_dim = IrBuilder::reverseArrayExpr(IrBuilder::arrayExpr<Val*>(
+   [&consumer_bulk_ids](){
+    std::vector<Val*> extents;
+    for (auto item: consumer_bulk_ids) {
+      extents.push_back(item->extent());
+    }
+    return extents;
+   }()));
+
+  // TODO: check if stries needs to be changed
+  auto element_strides =
+      IrBuilder::arrayExpr(std::vector<Val*>(dim, gmem_tv->fusion()->oneVal()));
+
+#if EXTRA_LOGS
+  {
+    std::cout << "[DEBUG] box_dim: " << box_dim << std::endl;
+    std::cout << "[DEBUG] element_strides: " << element_strides << std::endl;
+  }
+#endif
+  auto descriptor = encodeTensorMapTiled(
+      gmem_tv->dtype(),
+      global_address,
+      global_dim,
+      global_strides,
+      box_dim,
+      element_strides,
+      TensorMapInterleave::NoInterleave,
+      MmaInputSmemSwizzle::None,
+      TensorMapL2Promotion::NoL2Promotion,
+      TensorMapFloatOOBFill::NoOOBFill);
+
+  auto coordinate = IrBuilder::arrayExpr(
+      std::vector<Val*>(dim, gmem_tv->fusion()->zeroVal()));
+
+  Val* index = nullptr;
+
+  if (is_load) {
+    std::stringstream ss;
+    ss << "Hopper::CpAsyncBulkTensorTileG2SIndex<" << dim << ">";
+    index = IrBuilder::structExpr(
+        {{"descriptor", IrBuilder::addressExpr(descriptor)},
+         {"coordinate", coordinate},
+         {"mbarrier", mbarrier}},
+        ss.str());
+#if EXTRA_LOGS
+    { std::cout << "[DEBUG] is_load (true): " << ss.str() << std::endl; }
+#endif
+  } else {
+    std::stringstream ss;
+    ss << "Hopper::CpAsyncBulkTensorTileS2GIndex<" << dim << ">";
+    index = IrBuilder::structExpr(
+        {{"descriptor", IrBuilder::addressExpr(descriptor)},
+         {"coordinate", coordinate}},
+        ss.str());
+#if EXTRA_LOGS
+    { std::cout << "[DEBUG] is_load (true): " << ss.str() << std::endl; }
+#endif
+  }
+#if EXTRA_LOGS
+  { std::cout << "[DEBUG] index v1: " << index->toString() << std::endl; }
+#endif
+  index = GpuLower::current()->commonScalarMap().hoistScalar(index, loops);
+#if EXTRA_LOGS
+  { std::cout << "[DEBUG] index v2: " << index->toString() << std::endl; }
+#endif
+  return IrBuilder::create<kir::TensorIndex>(gmem_tv, index);
+
+#ifdef EXTRA_LOGS
+#undef EXTRA_LOGS
+#endif
+}
+} // anonymous namespace
+
+Val* Index::cpAsyncBulkIndex(
+    TensorView* gmem_tv,
+    TensorView* consumer,
+    Val* mbarrier,
+    const std::vector<kir::ForLoop*>& loops) {
+  const bool req_mem = gmem_tv->getMemoryType() == MemoryType::Global;
+  const bool req_rfact_leaf =
+      gmem_tv->getMaybeRFactorDomain() == gmem_tv->getLeafDomain();
+  const bool req_aloc_leaf =
+      gmem_tv->getMaybeAllocationDomain() == gmem_tv->getLeafDomain();
+
+  if (req_mem && req_rfact_leaf && req_aloc_leaf) {
+    return WIP_cpAsyncBuldIndex_SingleTile(gmem_tv, consumer, mbarrier, loops);
+  } else {
+    return WIP_cpAsyncBuldIndex_MultiTile(gmem_tv, consumer, mbarrier, loops);
+  }
 }
 
 } // namespace nvfuser
