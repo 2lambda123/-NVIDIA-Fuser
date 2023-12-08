@@ -3444,8 +3444,7 @@ Val* WIP_cpAsyncBuldIndex_MultiTile(
     }
   }
 
-  // TODO: dim to be replaced by number of alloc domains / bulk iterdomains
-  int64_t dim = (int64_t)gmem_tv->nDims();
+  int64_t dim = (int64_t)consumer_bulk_ids.size();
   NVF_ERROR(dim > 0);
   int64_t itemsize = dataTypeSize(gmem_tv->dtype());
 #if EXTRA_LOGS
@@ -3519,7 +3518,8 @@ Val* WIP_cpAsyncBuldIndex_MultiTile(
     return extents;
    }()));
 
-  // TODO: check if stries needs to be changed
+  // Element strides are set to '1', see:
+  // https://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__TENSOR__MEMORY.html
   auto element_strides =
       IrBuilder::arrayExpr(std::vector<Val*>(dim, gmem_tv->fusion()->oneVal()));
 
@@ -3541,6 +3541,15 @@ Val* WIP_cpAsyncBuldIndex_MultiTile(
       TensorMapL2Promotion::NoL2Promotion,
       TensorMapFloatOOBFill::NoOOBFill);
 
+  // TODO: find pairs of consumer leaves (bulk and non-bulk) and calculate this way coordinates,
+  // e.g. 1d
+  //  gmem_tv := [M]
+  //  gmem_tv.split(0, bulk_size) -> [M/bulk_size, bulk_size]
+  //
+  // we want need to:
+  //  - find loop bound to 'M/bulk_size' IterDomain,
+  //  - for found loop we pick its iterator (i)
+  //  - create coordinate, where for each dim we have new Val, a result of (i) * bulk_size->extent()
   auto coordinate = IrBuilder::arrayExpr(
       std::vector<Val*>(dim, gmem_tv->fusion()->zeroVal()));
 
