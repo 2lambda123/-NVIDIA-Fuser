@@ -3349,13 +3349,13 @@ Val* WIP_cpAsyncBuldIndex_MultiTile(
 
   bool is_load = (gmem_tv != consumer);
 
-/*
- global_address,    <--- gmem_tv metadata
- global_dim,        <--- gmem_tv metadata, alloc_size
- global_strides,    <--- gmem_tv metadata, alloc_strides
- box_dim,           <--- consumer metadata, extends for bulk ids
- element_strides,   <--- consumer metadata, ?? alloc_strides for bulk id
- */
+  /*
+   global_address,    <--- gmem_tv metadata
+   global_dim,        <--- gmem_tv metadata, alloc_size
+   global_strides,    <--- gmem_tv metadata, alloc_strides
+   box_dim,           <--- consumer metadata, extends for bulk ids
+   element_strides,   <--- consumer metadata, ?? alloc_strides for bulk id
+   */
 
 #define EXTRA_LOGS 1
 
@@ -3381,19 +3381,23 @@ Val* WIP_cpAsyncBuldIndex_MultiTile(
     printer(
         gmem_tv->getMaybeAllocationDomain(),
         "gmem_tv->getMaybeAllocationDomain()");
-    
+
     printer(
         consumer->getMaybeRFactorDomain(), "consumer->getMaybeRFactorDomain()");
     printer(consumer->getLeafDomain(), "consumer->getLeafDomain()");
     printer(
-        consumer->getMaybeAllocationDomain(), "consumer->getMaybeAllocationDomain()");
-    
-    std::cout << "=======================================================================\n"
-      << "consumer, leaf and type of parallelization:\n";
-    for (const auto id: consumer->getLeafDomain()) {
-      std::cout << " " << id->toString() << ": " << id->getParallelType() << std::endl;
+        consumer->getMaybeAllocationDomain(),
+        "consumer->getMaybeAllocationDomain()");
+
+    std::cout
+        << "=======================================================================\n"
+        << "consumer, leaf and type of parallelization:\n";
+    for (const auto id : consumer->getLeafDomain()) {
+      std::cout << " " << id->toString() << ": " << id->getParallelType()
+                << std::endl;
     }
-    std::cout << "=======================================================================\n";
+    std::cout
+        << "=======================================================================\n";
   }
 #endif
 
@@ -3414,14 +3418,20 @@ Val* WIP_cpAsyncBuldIndex_MultiTile(
   std::vector<IterDomain*> consumer_bulk_ids;
   {
     const auto consumer_leaves = consumer->getLeafDomain();
-    NVF_ERROR(std::any_of(consumer_leaves.begin(), consumer_leaves.end(), [&consumer_bulk_ids](IterDomain* id){
-      if (id->isBulk()) {
-        consumer_bulk_ids.push_back(id);
-        return true;
-      } else {return false;}}));
+    NVF_ERROR(std::any_of(
+        consumer_leaves.begin(),
+        consumer_leaves.end(),
+        [&consumer_bulk_ids](IterDomain* id) {
+          if (id->isBulk()) {
+            consumer_bulk_ids.push_back(id);
+            return true;
+          } else {
+            return false;
+          }
+        }));
     NVF_ERROR(
-       gmem_tv->getMaybeAllocationDomain().size() == consumer_bulk_ids.size(),
-      "number of bulk leaf iterdomains in consumer must be the same as number of allocation domains in producer");
+        gmem_tv->getMaybeAllocationDomain().size() == consumer_bulk_ids.size(),
+        "number of bulk leaf iterdomains in consumer must be the same as number of allocation domains in producer");
   }
   {
     // TODO: snippet to be removed, added to learn how to use c2p maps
@@ -3435,11 +3445,12 @@ Val* WIP_cpAsyncBuldIndex_MultiTile(
 
     auto c2p_map = replay_producer_as_consumer.getReplay();
 
-    std::cout << "[DEBUG] consumer bulk id -> producer id" <<  std::endl;
-    for (const auto id: consumer_bulk_ids) {
+    std::cout << "[DEBUG] consumer bulk id -> producer id" << std::endl;
+    for (const auto id : consumer_bulk_ids) {
       auto pid = c2p_map.find(id);
       if (c2p_map.end() != pid) {
-        std::cout << "  " << pid->first->toString() << " - " << pid->second->toString() << std::endl;
+        std::cout << "  " << pid->first->toString() << " - "
+                  << pid->second->toString() << std::endl;
       }
     }
   }
@@ -3509,14 +3520,14 @@ Val* WIP_cpAsyncBuldIndex_MultiTile(
   }
 
   // Reverse array to convert from row major to column major
-  auto box_dim = IrBuilder::reverseArrayExpr(IrBuilder::arrayExpr<Val*>(
-   [&consumer_bulk_ids](){
-    std::vector<Val*> extents;
-    for (auto item: consumer_bulk_ids) {
-      extents.push_back(item->extent());
-    }
-    return extents;
-   }()));
+  auto box_dim = IrBuilder::reverseArrayExpr(
+      IrBuilder::arrayExpr<Val*>([&consumer_bulk_ids]() {
+        std::vector<Val*> extents;
+        for (auto item : consumer_bulk_ids) {
+          extents.push_back(item->extent());
+        }
+        return extents;
+      }()));
 
   // Element strides are set to '1', see:
   // https://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__TENSOR__MEMORY.html
@@ -3541,15 +3552,16 @@ Val* WIP_cpAsyncBuldIndex_MultiTile(
       TensorMapL2Promotion::NoL2Promotion,
       TensorMapFloatOOBFill::NoOOBFill);
 
-  // TODO: find pairs of consumer leaves (bulk and non-bulk) and calculate this way coordinates,
-  // e.g. 1d
+  // TODO: find pairs of consumer leaves (bulk and non-bulk) and calculate this
+  // way coordinates, e.g. 1d
   //  gmem_tv := [M]
   //  gmem_tv.split(0, bulk_size) -> [M/bulk_size, bulk_size]
   //
   // we want need to:
   //  - find loop bound to 'M/bulk_size' IterDomain,
   //  - for found loop we pick its iterator (i)
-  //  - create coordinate, where for each dim we have new Val, a result of (i) * bulk_size->extent()
+  //  - create coordinate, where for each dim we have new Val, a result of (i) *
+  //  bulk_size->extent()
   auto coordinate = IrBuilder::arrayExpr(
       std::vector<Val*>(dim, gmem_tv->fusion()->zeroVal()));
 

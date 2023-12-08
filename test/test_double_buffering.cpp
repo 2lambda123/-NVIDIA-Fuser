@@ -18,9 +18,16 @@ namespace nvfuser {
 namespace {
 class DoubleBufferingTest : public NVFuserTest {};
 
-void printer(const char* file, const int line, const char* msg, const char* tv_desc, const TensorView* tv, bool extra_line = false){
+void printer(
+    const char* file,
+    const int line,
+    const char* msg,
+    const char* tv_desc,
+    const TensorView* tv,
+    bool extra_line = false) {
   std::stringstream ss;
-  ss << tv->toString() << " | " << tv_desc << " | " << msg << " (" << file << ":" << line << ")" << std::endl;
+  ss << tv->toString() << " | " << tv_desc << " | " << msg << " (" << file
+     << ":" << line << ")" << std::endl;
   if (extra_line) {
     ss << std::endl;
   }
@@ -49,16 +56,16 @@ TEST_F(DoubleBufferingTest, WIP) {
   tv1->definition()->as<LoadStoreOp>()->setOpType(
       LoadStoreOpType::CpAsyncBulkTensorTile);
 
-    // [M] -> [M/bid, bid]
-    tv2->split(-1, bulk_inner_dim);
+  // [M] -> [M/bid, bid]
+  tv2->split(-1, bulk_inner_dim);
 
-    TransformPropagatorWithCheck propagator(tv2);
-    MaxRootDomainInfoSpanningTree(tv2).traverse(&propagator);
+  TransformPropagatorWithCheck propagator(tv2);
+  MaxRootDomainInfoSpanningTree(tv2).traverse(&propagator);
 
-    tv0->computeAt(tv2, 1);
-    tv1->doubleBuffer();
+  tv0->computeAt(tv2, 1);
+  tv1->doubleBuffer();
 
-    tv1->axis(-1)->parallelize(ParallelType::Bulk);
+  tv1->axis(-1)->parallelize(ParallelType::Bulk);
 
   fusion.printTransforms();
 
@@ -94,18 +101,18 @@ TEST_F(DoubleBufferingTest, DISABLED_WIP__2d) {
   tv1->axis(0)->parallelize(ParallelType::Bulk);
   tv1->axis(1)->parallelize(ParallelType::Bulk);
 
-    // [M, N] -> [M, N/bid, bid]
-    tv2->split(-1, bulk_inner_dim);
-    // [M, N/bid, bid] -> [M/bod, bod, N/bid, bid]
-    tv2->split(0, bulk_outer_dim);
-    // [M/bod, bod, N/bid, bid] -> [M/bod, N/bid, bod, bid]
-    tv2->reorder({{-2, -3}});
+  // [M, N] -> [M, N/bid, bid]
+  tv2->split(-1, bulk_inner_dim);
+  // [M, N/bid, bid] -> [M/bod, bod, N/bid, bid]
+  tv2->split(0, bulk_outer_dim);
+  // [M/bod, bod, N/bid, bid] -> [M/bod, N/bid, bod, bid]
+  tv2->reorder({{-2, -3}});
 
-    TransformPropagatorWithCheck propagator(tv2);
-    MaxRootDomainInfoSpanningTree(tv2).traverse(&propagator);
+  TransformPropagatorWithCheck propagator(tv2);
+  MaxRootDomainInfoSpanningTree(tv2).traverse(&propagator);
 
-    tv0->computeAt(tv2, 2);
-    tv1->doubleBuffer();
+  tv0->computeAt(tv2, 2);
+  tv1->doubleBuffer();
 
   fusion.printTransforms();
 
