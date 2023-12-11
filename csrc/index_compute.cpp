@@ -3418,20 +3418,20 @@ Val* WIP_cpAsyncBuldIndex_MultiTile(
   std::vector<IterDomain*> consumer_bulk_ids;
   {
     const auto consumer_leaves = consumer->getLeafDomain();
-    NVF_ERROR(std::any_of(
-        consumer_leaves.begin(),
-        consumer_leaves.end(),
-        [&consumer_bulk_ids](IterDomain* id) {
-          if (id->isBulk()) {
-            consumer_bulk_ids.push_back(id);
-            return true;
-          } else {
-            return false;
-          }
-        }));
+    for (auto id: consumer_leaves) {
+      if (id->isBulk()) {
+        consumer_bulk_ids.push_back(id);
+      }
+    }
+    NVF_ERROR(!consumer_bulk_ids.empty(), "consumer must have at least one bulk IterDomain")
     NVF_ERROR(
         gmem_tv->getMaybeAllocationDomain().size() == consumer_bulk_ids.size(),
-        "number of bulk leaf iterdomains in consumer must be the same as number of allocation domains in producer");
+        "number of bulk leaf IterDomains in the consumer (",
+        consumer_bulk_ids.size(),
+        ") must be the same as the number of allocation domains in the producer (",
+        gmem_tv->getMaybeAllocationDomain().size(),
+        ")"
+        );
   }
   {
     // TODO: snippet to be removed, added to learn how to use c2p maps
@@ -3562,6 +3562,22 @@ Val* WIP_cpAsyncBuldIndex_MultiTile(
   //  - for found loop we pick its iterator (i)
   //  - create coordinate, where for each dim we have new Val, a result of (i) *
   //  bulk_size->extent()
+#if EXTRA_LOGS
+  {
+    std::stringstream ss;
+    ss << "[DEBUG] loops: \n";
+    for (auto loop: loops) {
+      if (!loop->iter_domain()->isBulk()) {
+        ss << "  loop:\n" << loop->toString() << "\n";
+        ss << "   index: " << loop->index() << "\n";
+        ss << "   IterDomain: " << loop->iter_domain() << "\n";
+      } else {
+        ss << "  loop: is bulk\n";
+      }
+    }
+    std::cout << ss.str();
+  }
+#endif
   auto coordinate = IrBuilder::arrayExpr(
       std::vector<Val*>(dim, gmem_tv->fusion()->zeroVal()));
 
@@ -3616,7 +3632,8 @@ Val* Index::cpAsyncBulkIndex(
       gmem_tv->getMaybeAllocationDomain() == gmem_tv->getLeafDomain();
 
   if (req_mem && req_rfact_leaf && req_aloc_leaf) {
-    return WIP_cpAsyncBuldIndex_SingleTile(gmem_tv, consumer, mbarrier, loops);
+    // return WIP_cpAsyncBuldIndex_SingleTile(gmem_tv, consumer, mbarrier, loops);
+    return WIP_cpAsyncBuldIndex_MultiTile(gmem_tv, consumer, mbarrier, loops);
   } else {
     return WIP_cpAsyncBuldIndex_MultiTile(gmem_tv, consumer, mbarrier, loops);
   }
