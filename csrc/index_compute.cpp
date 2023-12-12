@@ -3578,8 +3578,33 @@ Val* WIP_cpAsyncBuldIndex_MultiTile(
     std::cout << ss.str();
   }
 #endif
-  auto coordinate = IrBuilder::arrayExpr(
-      std::vector<Val*>(dim, gmem_tv->fusion()->zeroVal()));
+  std::vector<kir::ForLoop*> coord_loops;
+  {
+    for (auto loop: loops) {
+      if (!loop->iter_domain()->isBulk()) {
+        coord_loops.push_back(loop);
+      }
+    }
+    NVF_ERROR((int64_t)coord_loops.size() == dim || coord_loops.empty(), "size of list of loops to use for coordinates (", coord_loops.size(), ") must be equal to the number of bulk leaf Iterdomains (", dim, ") or must be empty");
+
+    // test_memory.cpp bulk cases don't have non-bulk loops
+    if (!coord_loops.empty()) {
+      NVF_ERROR(coord_loops.size() == 1, "More than single loop is not supported, yet?, Got ", coord_loops.size());
+    }
+  }
+  auto coordinate = [&coord_loops, &dim, &gmem_tv, &consumer_bulk_ids](){
+    if (coord_loops.empty()) {
+      return IrBuilder::arrayExpr(
+        std::vector<Val*>(dim, gmem_tv->fusion()->zeroVal()));
+    } else {
+      std::vector<Val*> coords_dim;
+      // TODO: reverse it!
+      for (auto loop: coord_loops) {
+        coords_dim.push_back(IrBuilder::mulExpr(loop->index(), consumer_bulk_ids.front()->extent()));
+      }
+      return IrBuilder::arrayExpr(coords_dim);
+    }
+  }();
 
   Val* index = nullptr;
 
