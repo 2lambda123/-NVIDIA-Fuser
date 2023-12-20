@@ -162,11 +162,27 @@ class CudaKernelGenerator : private kir::ConstIrVisitor {
       const std::string& kernel_name) {
     CudaKernelGenerator codegen(kernel);
     codegen.genDeclaration(kernel_name);
+    std::cout << "[DEBUG] codegen.genDeclaration(kernel_name):\n" << codegen.code_.str()
+      << "==============================================================================\n"
+      << "==============================================================================\n";
     codegen.startBlock();
+    std::cout << "[DEBUG] codegen.startBlock():\n" << codegen.code_.str()
+      << "==============================================================================\n"
+      << "==============================================================================\n";
     codegen.genPrologue();
+        std::cout << "[DEBUG] codegen.genPrologue():\n" << codegen.code_.str()
+      << "==============================================================================\n"
+      << "==============================================================================\n";
     codegen.genBody();
+        std::cout << "[DEBUG] codegen.genBody():\n" << codegen.code_.str()
+      << "==============================================================================\n"
+      << "==============================================================================\n";
     codegen.endBlock();
+        std::cout << "[DEBUG] codegen.endBlock():\n" << codegen.code_.str()
+      << "==============================================================================\n"
+      << "==============================================================================\n";
     NVF_CHECK(codegen.block_nest_level_ == 0);
+    NVF_ERROR(false, "End of processing - generateKernelDefinition()");
     return codegen.code_.str();
   }
 
@@ -384,6 +400,9 @@ class CudaKernelGenerator : private kir::ConstIrVisitor {
   // non-const Expr*.
   void handle(const std::vector<Expr*>& exprs) {
     for (Expr* expr : exprs) {
+#if 0
+      std::cout << "[DEBUG] handle -> top level expr\n" << expr->toString(2) << std::endl;
+#endif
       kir::ConstIrVisitor::dispatch(expr);
     }
   }

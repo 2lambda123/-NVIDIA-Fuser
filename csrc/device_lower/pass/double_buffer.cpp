@@ -186,7 +186,11 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
       : double_buffer_loop_(double_buffer_loop),
         double_buffer_load_exprs_(double_buffer_load_exprs),
         loop_type_(loop_type),
-        exclude_(exclude) {}
+        exclude_(exclude),
+        has_bulk_load_(std::any_of(
+            double_buffer_load_exprs.begin(),
+            double_buffer_load_exprs.end(),
+            ir_utils::isCpAsyncBulkLoad)){}
 
   using kir::IrVisitor::handle;
 
@@ -234,6 +238,16 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
         double_buffer_loop_->isUnrollRequired(),
         loop_type_);
 
+#if 0
+    {
+      std::cout << "[DEBUG][" << __LINE__ << "] cloned loop (" << (void*)cloned_top_level_loop_ << ", " << loop_type_ << "), expressions (" << cloned_top_level_loop_->body().exprs().size() << "):\n";
+      std::cout << cloned_top_level_loop_->toString(4) << std::endl;
+      for (const auto& body_expr: cloned_top_level_loop_->body().exprs()) {
+        std::cout << body_expr->toInlineString(4) << std::endl;
+      }
+    }
+#endif
+
     handle(double_buffer_loop_);
   }
 
@@ -241,7 +255,14 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
     kir::ForLoop* cloned_loop = fl == double_buffer_loop_
         ? cloned_top_level_loop_
         : IrBuilder::create<kir::ForLoop>(fl);
-
+#if 0
+    {
+      std::cout << "[DEBUG][" << __LINE__ << "] handling of fl: (" << (void*)fl << ", " << fl->doubleBufferLoopStage() << "), body count: (" << fl->body().size() << ")\n";
+      std::cout << fl->toString(4) << std::endl;
+      std::cout << "[DEBUG][" << __LINE__ << "] handling of cloned_loop: (" << (void*)cloned_loop << ", " << cloned_loop->doubleBufferLoopStage() << "), body count: (" << cloned_loop->body().size() << ")\n";
+      std::cout << cloned_loop->toString(4) << std::endl;
+    }
+#endif
     cloned_scopes_.push_back(&cloned_loop->body());
 
     kir::IrVisitor::handle(fl);
@@ -271,7 +292,35 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
 
     NVF_ERROR(!cloned_scopes_.empty());
 
+    const auto is_bulk_mbarier_allocation = [expr, this]() {
+      if (has_bulk_load_) {
+        if (expr->isA<kir::Allocate>()) {
+          const auto op = expr->as<kir::Allocate>();
+          // Size of allocation for mbarier attached to bulk operation
+          if (MemoryType::Shared == op->memoryType() && (op->size()->isOne() || op->size()->isOneInt())) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }();
+
+    const auto is_bulk_mbarier_expr = [expr, this]() {
+      if (has_bulk_load_) {
+        if(expr->isA<kir::MBarrierInit>()) {
+          const auto op = expr->as<kir::MBarrierInit>();
+          (void)op;
+          return true;
+        }
+      }
+      return false;
+    }() || is_bulk_mbarier_allocation;
+
     if (loop_type_ == DoubleBufferLoopStage::Main) {
+      // mbarier allocation for cpAsyncBulk is defined in prolog loop
+      if (is_bulk_mbarier_allocation) {
+        return;
+      }
       cloned_scopes_.back()->push_back(expr);
       return;
     }
@@ -289,10 +338,23 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
           NVF_ERROR(double_buffer_tv != nullptr);
           return out_tv == double_buffer_tv;
         });
+
+#if 1
+        {
+          std::cout << "[DEBUG][" << __LINE__ << "] handling of expr: (" << (void*)expr << "), is_bulk_helper_expr (" << is_bulk_mbarier_allocation << ")\n";
+          std::cout << expr->toString(4) << std::endl;
+        }
+#endif
+
     if ((loop_type_ == DoubleBufferLoopStage::Prolog &&
-         is_double_buffer_load_expr) ||
+         (is_double_buffer_load_expr || is_bulk_mbarier_allocation || is_bulk_mbarier_expr)) ||
         (loop_type_ == DoubleBufferLoopStage::Epilog &&
-         !is_double_buffer_load_expr)) {
+         (!is_double_buffer_load_expr && !is_bulk_mbarier_allocation))) {
+#if 1
+      {
+        std::cout << "[DEBUG][" << __LINE__ << "] handling of expr: (" << (void*)expr << ") - added to clonned scope in '" << cloned_top_level_loop_->doubleBufferLoopStage() << "' loop\n";
+      }
+#endif
       cloned_scopes_.back()->push_back(expr);
     }
   }
@@ -305,6 +367,7 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
   kir::ForLoop* cloned_top_level_loop_ = nullptr;
   std::deque<kir::Scope*> cloned_scopes_;
   const std::unordered_set<Expr*>& exclude_;
+  const bool has_bulk_load_;
 };
 
 using InsertionInfo = std::unordered_map<kir::ForLoop*, std::vector<Expr*>>;
@@ -792,8 +855,21 @@ Val* DoubleBufferInfo::getOriginalAllocSize(const TensorView* tv) {
 }
 
 std::vector<Expr*> DoubleBufferPass::run(const std::vector<Expr*>& exprs) {
+
+  auto printer = [](std::string&& msg, const std::vector<Expr*>& exprs){
+    std::cout << "====================================================================\n============================================= " << msg << std::endl;
+    for (const auto expr : exprs) {
+      std::cout << "  expr:\n" << expr->toString(4) << std::endl;
+    }
+    std::cout << "********************************************************************\n";
+  };
+
+  printer("Before running DB pass", exprs);
   auto insertion_info = DoubleBufferLoopNestInspector::run(exprs);
-  return DoubleBufferInserter::run(exprs, insertion_info);
+  printer("In the middle of running DB pass", exprs);
+  auto result = DoubleBufferInserter::run(exprs, insertion_info);
+  printer("After running DB pass", result);
+  return result;
 }
 
 } // namespace nvfuser

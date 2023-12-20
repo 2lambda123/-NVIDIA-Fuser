@@ -3357,7 +3357,7 @@ Val* WIP_cpAsyncBuldIndex_MultiTile(
    element_strides,   <--- consumer metadata, ?? alloc_strides for bulk id
    */
 
-#define EXTRA_LOGS 1
+#define EXTRA_LOGS 0
 
 #if EXTRA_LOGS
   {
@@ -3433,6 +3433,7 @@ Val* WIP_cpAsyncBuldIndex_MultiTile(
         ")"
         );
   }
+#if EXTRA_LOGS
   {
     // TODO: snippet to be removed, added to learn how to use c2p maps
     auto c2p_root_map = PairwiseRootDomainMap(gmem_tv, consumer)
@@ -3454,6 +3455,7 @@ Val* WIP_cpAsyncBuldIndex_MultiTile(
       }
     }
   }
+#endif
 
   int64_t dim = (int64_t)consumer_bulk_ids.size();
   NVF_ERROR(dim > 0);
