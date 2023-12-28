@@ -118,6 +118,12 @@ void validateDoubleBufferedTensor(const TensorView* tv) {
 
 namespace {
 
+int64_t getStageDepthFor(kir::ForLoop* double_buffer_loop) {
+  const auto gpu_lower = GpuLower::current();
+  return static_cast<int64_t>(gpu_lower->doubleBufferInfo().getStageDepthFor(
+      double_buffer_loop->iter_domain()));
+}
+
 // Initial inspection of a fusion to find and validate double buffered tensors
 class DoubleBufferFusionInspector : private IterVisitor {
  public:
@@ -203,8 +209,7 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
         double_buffer_loop_->iter_domain(), loop_type_);
     auto start = double_buffer_loop_->start();
     auto stop = double_buffer_loop_->stop();
-    auto stage_depth = gpu_lower->doubleBufferInfo().getStageDepthFor(
-        double_buffer_loop_->iter_domain());
+    auto stage_depth = getStageDepthFor(double_buffer_loop_);
 
     if (loop_type_ == DoubleBufferLoopStage::Prolog) {
       NVF_ERROR(start->isZeroInt());

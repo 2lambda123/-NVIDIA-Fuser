@@ -105,7 +105,6 @@ TEST_F(DoubleBufferingTest, DISABLED_WIP__2d) {
   testValidate(&fusion, cg_outputs, {t0}, {t0}, __LINE__, __FILE__);
 }
 
-#if 0
 TEST_F(DoubleBufferingTest, FusionDoubleBuffering1) {
   Fusion fusion;
   FusionGuard fg(&fusion);
@@ -772,5 +771,4 @@ TEST_F(DoubleBufferingTest, DoubleBufferNoSync) {
 
   testValidate(&fusion, cg_outputs, {t0, t1}, {ref}, __LINE__, __FILE__);
 }
-#endif
 } // namespace nvfuser
