@@ -3418,20 +3418,21 @@ Val* WIP_cpAsyncBuldIndex_MultiTile(
   std::vector<IterDomain*> consumer_bulk_ids;
   {
     const auto consumer_leaves = consumer->getLeafDomain();
-    for (auto id: consumer_leaves) {
+    for (auto id : consumer_leaves) {
       if (id->isBulk()) {
         consumer_bulk_ids.push_back(id);
       }
     }
-    NVF_ERROR(!consumer_bulk_ids.empty(), "consumer must have at least one bulk IterDomain")
+    NVF_ERROR(
+        !consumer_bulk_ids.empty(),
+        "consumer must have at least one bulk IterDomain")
     NVF_ERROR(
         gmem_tv->getMaybeAllocationDomain().size() == consumer_bulk_ids.size(),
         "number of bulk leaf IterDomains in the consumer (",
         consumer_bulk_ids.size(),
         ") must be the same as the number of allocation domains in the producer (",
         gmem_tv->getMaybeAllocationDomain().size(),
-        ")"
-        );
+        ")");
   }
 #if EXTRA_LOGS
   {
@@ -3568,7 +3569,7 @@ Val* WIP_cpAsyncBuldIndex_MultiTile(
   {
     std::stringstream ss;
     ss << "[DEBUG] loops: \n";
-    for (auto loop: loops) {
+    for (auto loop : loops) {
       if (!loop->iter_domain()->isBulk()) {
         ss << "  loop:\n" << loop->toString() << "\n";
         ss << "   index: " << loop->index() << "\n";
@@ -3582,27 +3583,37 @@ Val* WIP_cpAsyncBuldIndex_MultiTile(
 #endif
   std::vector<kir::ForLoop*> coord_loops;
   {
-    for (auto loop: loops) {
+    for (auto loop : loops) {
       if (!loop->iter_domain()->isBulk()) {
         coord_loops.push_back(loop);
       }
     }
-    NVF_ERROR((int64_t)coord_loops.size() == dim || coord_loops.empty(), "size of list of loops to use for coordinates (", coord_loops.size(), ") must be equal to the number of bulk leaf Iterdomains (", dim, ") or must be empty");
+    NVF_ERROR(
+        (int64_t)coord_loops.size() == dim || coord_loops.empty(),
+        "size of list of loops to use for coordinates (",
+        coord_loops.size(),
+        ") must be equal to the number of bulk leaf Iterdomains (",
+        dim,
+        ") or must be empty");
 
     // test_memory.cpp bulk cases don't have non-bulk loops
     if (!coord_loops.empty()) {
-      NVF_ERROR(coord_loops.size() == 1, "More than single loop is not supported, yet?, Got ", coord_loops.size());
+      NVF_ERROR(
+          coord_loops.size() == 1,
+          "More than single loop is not supported, yet?, Got ",
+          coord_loops.size());
     }
   }
-  auto coordinate = [&coord_loops, &dim, &gmem_tv, &consumer_bulk_ids](){
+  auto coordinate = [&coord_loops, &dim, &gmem_tv, &consumer_bulk_ids]() {
     if (coord_loops.empty()) {
       return IrBuilder::arrayExpr(
-        std::vector<Val*>(dim, gmem_tv->fusion()->zeroVal()));
+          std::vector<Val*>(dim, gmem_tv->fusion()->zeroVal()));
     } else {
       std::vector<Val*> coords_dim;
       // TODO: reverse it!
-      for (auto loop: coord_loops) {
-        coords_dim.push_back(IrBuilder::mulExpr(loop->index(), consumer_bulk_ids.front()->extent()));
+      for (auto loop : coord_loops) {
+        coords_dim.push_back(IrBuilder::mulExpr(
+            loop->index(), consumer_bulk_ids.front()->extent()));
       }
       return IrBuilder::arrayExpr(coords_dim);
     }
@@ -3659,7 +3670,8 @@ Val* Index::cpAsyncBulkIndex(
       gmem_tv->getMaybeAllocationDomain() == gmem_tv->getLeafDomain();
 
   if (req_mem && req_rfact_leaf && req_aloc_leaf) {
-    // return WIP_cpAsyncBuldIndex_SingleTile(gmem_tv, consumer, mbarrier, loops);
+    // return WIP_cpAsyncBuldIndex_SingleTile(gmem_tv, consumer, mbarrier,
+    // loops);
     return WIP_cpAsyncBuldIndex_MultiTile(gmem_tv, consumer, mbarrier, loops);
   } else {
     return WIP_cpAsyncBuldIndex_MultiTile(gmem_tv, consumer, mbarrier, loops);

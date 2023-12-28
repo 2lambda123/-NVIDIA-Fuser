@@ -9,30 +9,11 @@
 #include <ops/all_ops.h>
 #include <test/utils.h>
 #include <test/validator.h>
-#include <sstream>
-#include "ir/interface_nodes.h"
-#include "type.h"
 
 namespace nvfuser {
 
 namespace {
 class DoubleBufferingTest : public NVFuserTest {};
-
-void printer(
-    const char* file,
-    const int line,
-    const char* msg,
-    const char* tv_desc,
-    const TensorView* tv,
-    bool extra_line = false) {
-  std::stringstream ss;
-  ss << tv->toString() << " | " << tv_desc << " | " << msg << " (" << file
-     << ":" << line << ")" << std::endl;
-  if (extra_line) {
-    ss << std::endl;
-  }
-  std::cout << ss.str();
-}
 } // anonymous namespace
 
 TEST_F(DoubleBufferingTest, WIP) {
