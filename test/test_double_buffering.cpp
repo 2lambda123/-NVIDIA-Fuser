@@ -58,6 +58,7 @@ TEST_F(DoubleBufferingTest, WIP) {
   testValidate(&fusion, cg_outputs, {t0}, {t0}, __LINE__, __FILE__);
 }
 
+#if 0
 TEST_F(DoubleBufferingTest, DISABLED_WIP__2d) {
   Fusion fusion;
   FusionGuard fg(&fusion);
@@ -104,6 +105,7 @@ TEST_F(DoubleBufferingTest, DISABLED_WIP__2d) {
   auto cg_outputs = fe.runFusion({t0});
   testValidate(&fusion, cg_outputs, {t0}, {t0}, __LINE__, __FILE__);
 }
+#endif
 
 TEST_F(DoubleBufferingTest, FusionDoubleBuffering1) {
   Fusion fusion;

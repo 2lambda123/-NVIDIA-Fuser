@@ -14,6 +14,10 @@
 #include <algorithm>
 #include <iterator>
 #include <vector>
+#include "device_lower/utils.h"
+#include "ir/builder.h"
+#include "ir/internal_base_nodes.h"
+#include "type.h"
 
 namespace nvfuser {
 
@@ -529,6 +533,66 @@ class DoubleBufferInserter : private kir::ExprMutator {
         double_buffer_loop, loads, DoubleBufferLoopStage::Prolog);
     registerInsertBefore(double_buffer_loop, prologue_loop);
 
+    {
+      const auto has_bulk_g2s =
+          std::any_of(loads.begin(), loads.end(), ir_utils::isCpAsyncBulkLoad);
+      const auto has_bulk_s2g =
+          std::any_of(loads.begin(), loads.end(), ir_utils::isCpAsyncBulkStore);
+      std::cout << "[DEBUG] has_bulk_g2s(" << has_bulk_g2s << "), has_bulk_s2g("
+                << has_bulk_s2g << ")\n";
+
+      if (has_bulk_g2s) {
+        const auto stage_depth = getStageDepthFor(double_buffer_loop);
+        const auto gpu_lower = GpuLower::current();
+        std::vector<Expr*> exprs;
+        const auto tokens_val = IrBuilder::arrayExpr(
+            std::vector<Val*>(stage_depth, gpu_lower->kernel()->zeroVal()));
+        exprs.push_back(tokens_val->definition());
+
+        /*
+          if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
+            for (unsigned a4 = 0; a4 < 2; ++a4) {
+              mbarrier::init((toSmem(T3) + a10 * a4), a11);
+            }
+          }
+        */
+        auto cond_result = IrBuilder::create<Val>(PrimDataType::Bool);
+        auto cond_expr = IrBuilder::create<kir::Asm>(
+            "threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0",
+            std::vector<Val*>{cond_result},
+            std::vector<Val*>{},
+            kir::Asm::Options{});
+        auto predicate =
+            IrBuilder::create<kir::Predicate>(cond_expr->output(0));
+        auto ifthenelse_expr = IrBuilder::create<kir::IfThenElse>(predicate);
+        auto& ifthenelse_body = ifthenelse_expr->thenBody();
+
+        auto loop_start = IrBuilder::create<Val>(0, PrimDataType::Index);
+        auto loop_index = IrBuilder::create<Val>(0, PrimDataType::Index);
+        auto loop_extend =
+            IrBuilder::create<Val>(stage_depth, PrimDataType::Index);
+        auto loop_domain_builder = IterDomainBuilder(loop_start, loop_extend);
+
+        auto loop = IrBuilder::create<kir::ForLoop>(
+            loop_domain_builder.build(),
+            loop_index,
+            loop_start,
+            loop_extend,
+            gpu_lower->kernel()->oneVal(),
+            false,
+            nullptr,
+            false,
+            DoubleBufferLoopStage::NotApplicable);
+
+        ifthenelse_body.push_back(loop);
+        exprs.push_back(ifthenelse_expr);
+
+        for (auto new_expr : exprs) {
+          registerInsertBefore(prologue_loop, new_expr);
+        }
+      }
+    }
+
     auto write_to_smem =
         std::any_of(loads.begin(), loads.end(), [](const Expr* expr) {
           return expr->output(0)->as<TensorView>()->getMemoryType() ==
@@ -842,7 +906,7 @@ std::vector<Expr*> DoubleBufferPass::run(const std::vector<Expr*>& exprs) {
   auto insertion_info = DoubleBufferLoopNestInspector::run(exprs);
   printer("In the middle of running DB pass", exprs);
   auto result = DoubleBufferInserter::run(exprs, insertion_info);
-  printer("After running DB pass", result);
+  // printer("After running DB pass", result);
   return result;
 }
 
