@@ -17,6 +17,7 @@
 #include "device_lower/utils.h"
 #include "ir/builder.h"
 #include "ir/internal_base_nodes.h"
+#include "ir/internal_nodes.h"
 #include "type.h"
 
 namespace nvfuser {
@@ -542,13 +543,33 @@ class DoubleBufferInserter : private kir::ExprMutator {
                 << has_bulk_s2g << ")\n";
 
       if (has_bulk_g2s) {
+        std::vector<Expr*> exprs;
+#if 0
+/*
+        // NOTE: placeholder for tokens
+        uint64_t a12[<stages>];
+*/
         const auto stage_depth = getStageDepthFor(double_buffer_loop);
         const auto gpu_lower = GpuLower::current();
-        std::vector<Expr*> exprs;
         const auto tokens_val = IrBuilder::arrayExpr(
             std::vector<Val*>(stage_depth, gpu_lower->kernel()->zeroVal()));
         exprs.push_back(tokens_val->definition());
-
+#endif
+#if 0
+/*
+        // NOTE: the number of expected 'arrivals' of mbarrier, used for barrier init
+        uint64_t a11;
+        a11 = blockDim.x * blockDim.y * blockDim.z;
+*/
+        auto block_size_val = IrBuilder::mulExpr(
+          IrBuilder::mulExpr(NamedScalar::getParallelDim(ParallelType::BIDx),
+                             NamedScalar::getParallelDim(ParallelType::BIDy)),
+          NamedScalar::getParallelDim(ParallelType::BIDz));
+        auto block_size_size = IrBuilder::create<Val>(1L, PrimDataType::Index);
+        auto block_size_alloc_expr = IrBuilder::create<kir::Allocate>(block_size_val, MemoryType::Local, block_size_size);
+        exprs.push_back(block_size_alloc_expr);
+#endif
+#if 0
         /*
           if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
             for (unsigned a4 = 0; a4 < 2; ++a4) {
@@ -556,17 +577,17 @@ class DoubleBufferInserter : private kir::ExprMutator {
             }
           }
         */
-        auto cond_result = IrBuilder::create<Val>(PrimDataType::Bool);
-        auto cond_expr = IrBuilder::create<kir::Asm>(
-            "threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0",
-            std::vector<Val*>{cond_result},
-            std::vector<Val*>{},
-            kir::Asm::Options{});
-        auto predicate =
-            IrBuilder::create<kir::Predicate>(cond_expr->output(0));
-        auto ifthenelse_expr = IrBuilder::create<kir::IfThenElse>(predicate);
-        auto& ifthenelse_body = ifthenelse_expr->thenBody();
 
+        auto if_predicate_expr = IrBuilder::logicalAndExpr(
+          IrBuilder::logicalAndExpr(IrBuilder::eqExpr(NamedScalar::getParallelIndex(ParallelType::TIDx), IrBuilder::create<Val>(0L, PrimDataType::UInt)),
+                                    IrBuilder::eqExpr(NamedScalar::getParallelIndex(ParallelType::TIDy), IrBuilder::create<Val>(0L, PrimDataType::UInt))),
+          IrBuilder::eqExpr(NamedScalar::getParallelIndex(ParallelType::TIDz), IrBuilder::create<Val>(0L, PrimDataType::UInt)));
+        auto if_predicate = IrBuilder::create<kir::Predicate>(if_predicate_expr);
+        auto ifthenelse_expr = IrBuilder::create<kir::IfThenElse>(if_predicate);
+
+
+        const auto gpu_lower = GpuLower::current();
+        const auto stage_depth = getStageDepthFor(double_buffer_loop);
         auto loop_start = IrBuilder::create<Val>(0, PrimDataType::Index);
         auto loop_index = IrBuilder::create<Val>(0, PrimDataType::Index);
         auto loop_extend =
@@ -583,10 +604,12 @@ class DoubleBufferInserter : private kir::ExprMutator {
             nullptr,
             false,
             DoubleBufferLoopStage::NotApplicable);
+        // NOTE: until for-loop has body, it won't be lowered
+        ifthenelse_expr->thenBody().push_back(loop);
 
-        ifthenelse_body.push_back(loop);
+
         exprs.push_back(ifthenelse_expr);
-
+#endif
         for (auto new_expr : exprs) {
           registerInsertBefore(prologue_loop, new_expr);
         }
