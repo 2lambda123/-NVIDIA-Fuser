@@ -2804,6 +2804,9 @@ class CudaKernelGenerator : private kir::ConstIrVisitor {
   void handle(const kir::Allocate* alloc) final {
     const auto buffer_dtype = alloc->buffer()->dtype();
 
+    std::cout << "[DEBUG2] handle kir::Allocate* - " << alloc->toString()
+              << std::endl;
+
     NVF_ERROR(alloc->buffer() != nullptr);
     alloc_set_.emplace(alloc->buffer());
 

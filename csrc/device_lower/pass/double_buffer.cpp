@@ -545,70 +545,134 @@ class DoubleBufferInserter : private kir::ExprMutator {
       if (has_bulk_g2s) {
         std::vector<Expr*> exprs;
 #if 0
-/*
-        // NOTE: placeholder for tokens
-        uint64_t a12[<stages>];
-*/
-        const auto stage_depth = getStageDepthFor(double_buffer_loop);
-        const auto gpu_lower = GpuLower::current();
-        const auto tokens_val = IrBuilder::arrayExpr(
-            std::vector<Val*>(stage_depth, gpu_lower->kernel()->zeroVal()));
-        exprs.push_back(tokens_val->definition());
-#endif
-#if 0
-/*
-        // NOTE: the number of expected 'arrivals' of mbarrier, used for barrier init
-        uint64_t a11;
-        a11 = blockDim.x * blockDim.y * blockDim.z;
-*/
-        auto block_size_val = IrBuilder::mulExpr(
-          IrBuilder::mulExpr(NamedScalar::getParallelDim(ParallelType::BIDx),
-                             NamedScalar::getParallelDim(ParallelType::BIDy)),
-          NamedScalar::getParallelDim(ParallelType::BIDz));
-        auto block_size_size = IrBuilder::create<Val>(1L, PrimDataType::Index);
-        auto block_size_alloc_expr = IrBuilder::create<kir::Allocate>(block_size_val, MemoryType::Local, block_size_size);
-        exprs.push_back(block_size_alloc_expr);
-#endif
-#if 0
         /*
           if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
-            for (unsigned a4 = 0; a4 < 2; ++a4) {
-              mbarrier::init((toSmem(T3) + a10 * a4), a11);
-            }
+            a12[0] = mbarrier::arriveExpectTX((toSmem(T3) + a10 * 0), (uint32_t)((((ceilDiv(T0.logical_size[0LL], 32)) * 4LL) * 32LL)));
+            Hopper::cpAsyncBulkTensorTileG2S((Hopper::CpAsyncBulkTensorTileG2SIndex<1>{ ptr2, (Array<nvfuser_index_t, 1, 1>{(32 * 0)}), (toSmem(T3) + a10 * 0) }), (toSmem(T1) + (128 * (0));
           }
         */
 
-        auto if_predicate_expr = IrBuilder::logicalAndExpr(
-          IrBuilder::logicalAndExpr(IrBuilder::eqExpr(NamedScalar::getParallelIndex(ParallelType::TIDx), IrBuilder::create<Val>(0L, PrimDataType::UInt)),
-                                    IrBuilder::eqExpr(NamedScalar::getParallelIndex(ParallelType::TIDy), IrBuilder::create<Val>(0L, PrimDataType::UInt))),
-          IrBuilder::eqExpr(NamedScalar::getParallelIndex(ParallelType::TIDz), IrBuilder::create<Val>(0L, PrimDataType::UInt)));
-        auto if_predicate = IrBuilder::create<kir::Predicate>(if_predicate_expr);
-        auto ifthenelse_expr = IrBuilder::create<kir::IfThenElse>(if_predicate);
+        auto blockFirstThreadPredicate = []() {
+            auto thread_predicate_val = IrBuilder::logicalAndExpr(
+            IrBuilder::logicalAndExpr(IrBuilder::eqExpr(NamedScalar::getParallelIndex(ParallelType::TIDx), IrBuilder::create<Val>(0L, PrimDataType::UInt)),
+                                      IrBuilder::eqExpr(NamedScalar::getParallelIndex(ParallelType::TIDy), IrBuilder::create<Val>(0L, PrimDataType::UInt))),
+            IrBuilder::eqExpr(NamedScalar::getParallelIndex(ParallelType::TIDz), IrBuilder::create<Val>(0L, PrimDataType::UInt)));
+          return IrBuilder::create<kir::Predicate>(thread_predicate_val);
+        };
+
+        // predicate: threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0
+        auto predicate = blockFirstThreadPredicate();
+        auto ifthenelse = IrBuilder::create<kir::IfThenElse>(predicate);
+
+        for (auto item: c10::irange(prologue_loop->body().size())) {
+          ifthenelse->thenBody().push_back(prologue_loop->body()[item]);
+        }
+        prologue_loop->body().clear();
+        prologue_loop->body().push_back(ifthenelse);
+#endif
+#if 1
+        {
+          // Status: works!
+          /*
+            // NOTE: placeholder for tokens
+            uint64_t a12[<stages>];
+          */
+
+          // NOTE: move to utils.cpp?
+          auto allocLocalBuffer = [](Val* buffer_size,
+                                     DataType dtype,
+                                     bool zero_init = false) {
+            const std::vector<IterDomain*> new_buffer_ids = {
+                IrBuilder::create<IterDomain>(IterDomainBuilder(
+                    GpuLower::current()->kernel()->zeroVal(), buffer_size))};
+            const auto buffer_domain =
+                IrBuilder::create<TensorDomain>(new_buffer_ids);
+            const auto buffer_tv = IrBuilder::create<TensorView>(
+                buffer_domain, dtype, MemoryType::Local);
+            return IrBuilder::create<kir::Allocate>(
+                buffer_tv, buffer_tv->getMemoryType(), nullptr, zero_init);
+          };
+
+          const auto stage_depth = getStageDepthFor(double_buffer_loop);
+          const auto tokens_size_val =
+              IrBuilder::create<Val>(stage_depth, DataType::Index);
+          auto tokens_storage =
+              allocLocalBuffer(tokens_size_val, DataType::UInt);
+          exprs.push_back(tokens_storage);
+        }
+#endif
+#if 1
+        {
+          // Status: works!
+          /*
+            // NOTE: the number of expected 'arrivals' of mbarrier, used for
+            barrier init uint64_t a11; a11 = blockDim.x * blockDim.y *
+            blockDim.z;
+          */
+          /*
+            explicit Allocate(
+                        IrBuilderPasskey passkey,
+                        Val* buffer,
+                        MemoryType memory_type,
+                        Val* size,
+                        bool zero_init = false);
+          */
+
+          auto block_size_val = IrBuilder::mulExpr(
+              IrBuilder::mulExpr(
+                  NamedScalar::getParallelDim(ParallelType::BIDx),
+                  NamedScalar::getParallelDim(ParallelType::BIDy)),
+              NamedScalar::getParallelDim(ParallelType::BIDz));
+          auto block_size_size =
+              IrBuilder::create<Val>(1L, PrimDataType::Index);
+          auto block_size_alloc_expr = IrBuilder::create<kir::Allocate>(
+              block_size_val, MemoryType::Local, block_size_size, false);
+          exprs.push_back(block_size_alloc_expr);
+          exprs.push_back(block_size_val->definition());
+        }
+#endif
+#if 0
+        {
+          /*
+            if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
+                for (unsigned a4 = 0; a4 < 2; ++a4) {
+                  mbarrier::init((toSmem(T3) + a10 * a4), a11);
+                }
+              }
+          */
+
+          auto if_predicate_expr = IrBuilder::logicalAndExpr(
+            IrBuilder::logicalAndExpr(IrBuilder::eqExpr(NamedScalar::getParallelIndex(ParallelType::TIDx), IrBuilder::create<Val>(0L, PrimDataType::UInt)),
+                                      IrBuilder::eqExpr(NamedScalar::getParallelIndex(ParallelType::TIDy), IrBuilder::create<Val>(0L, PrimDataType::UInt))),
+            IrBuilder::eqExpr(NamedScalar::getParallelIndex(ParallelType::TIDz), IrBuilder::create<Val>(0L, PrimDataType::UInt)));
+          auto if_predicate = IrBuilder::create<kir::Predicate>(if_predicate_expr);
+          auto ifthenelse_expr = IrBuilder::create<kir::IfThenElse>(if_predicate);
 
 
-        const auto gpu_lower = GpuLower::current();
-        const auto stage_depth = getStageDepthFor(double_buffer_loop);
-        auto loop_start = IrBuilder::create<Val>(0, PrimDataType::Index);
-        auto loop_index = IrBuilder::create<Val>(0, PrimDataType::Index);
-        auto loop_extend =
-            IrBuilder::create<Val>(stage_depth, PrimDataType::Index);
-        auto loop_domain_builder = IterDomainBuilder(loop_start, loop_extend);
+          const auto gpu_lower = GpuLower::current();
+          const auto stage_depth = getStageDepthFor(double_buffer_loop);
+          auto loop_start = IrBuilder::create<Val>(0, PrimDataType::Index);
+          auto loop_index = IrBuilder::create<Val>(0, PrimDataType::Index);
+          auto loop_extend =
+              IrBuilder::create<Val>(stage_depth, PrimDataType::Index);
+          auto loop_domain_builder = IterDomainBuilder(loop_start, loop_extend);
 
-        auto loop = IrBuilder::create<kir::ForLoop>(
-            loop_domain_builder.build(),
-            loop_index,
-            loop_start,
-            loop_extend,
-            gpu_lower->kernel()->oneVal(),
-            false,
-            nullptr,
-            false,
-            DoubleBufferLoopStage::NotApplicable);
-        // NOTE: until for-loop has body, it won't be lowered
-        ifthenelse_expr->thenBody().push_back(loop);
+          auto loop = IrBuilder::create<kir::ForLoop>(
+              loop_domain_builder.build(),
+              loop_index,
+              loop_start,
+              loop_extend,
+              gpu_lower->kernel()->oneVal(),
+              false,
+              nullptr,
+              false,
+              DoubleBufferLoopStage::NotApplicable);
+          // NOTE: until for-loop has body, it won't be lowered
+          ifthenelse_expr->thenBody().push_back(loop);
 
 
-        exprs.push_back(ifthenelse_expr);
+          exprs.push_back(ifthenelse_expr);
+        }
 #endif
         for (auto new_expr : exprs) {
           registerInsertBefore(prologue_loop, new_expr);
