@@ -410,9 +410,6 @@ class CudaKernelGenerator : private kir::ConstIrVisitor {
   // non-const Expr*.
   void handle(const std::vector<Expr*>& exprs) {
     for (Expr* expr : exprs) {
-#if 0
-      std::cout << "[DEBUG] handle -> top level expr\n" << expr->toString(2) << std::endl;
-#endif
       kir::ConstIrVisitor::dispatch(expr);
     }
   }
@@ -563,9 +560,6 @@ class CudaKernelGenerator : private kir::ConstIrVisitor {
     }
     const auto def = s->definition();
     const bool has_alloc = alloc_set_.find(s) != alloc_set_.end();
-    std::cout << "[DEBUG2] handle Val* - has alloc(" << has_alloc
-              << "), has definition(" << (def ? "1" : "0") << "): \n\t"
-              << s->toString() << std::endl;
     const bool is_param = kernel_params_.find(s) != kernel_params_.end();
     if (def != nullptr && !has_alloc && !is_param) {
       if (def->isOneOf<GetAttr, GetItem, GetMetaData>() ||
@@ -576,7 +570,6 @@ class CudaKernelGenerator : private kir::ConstIrVisitor {
         code_ << "(" << genInline(def) << ")";
       }
     } else if (s->isConst()) {
-      std::cout << "[DEBUG2] will be stringifed\n";
       stringify(s->value(), s->dtype());
     } else {
       code_ << genVariableName(s);
@@ -1042,10 +1035,6 @@ class CudaKernelGenerator : private kir::ConstIrVisitor {
   }
 
   void handle(const ArrayConstruct* aop) final {
-    std::cout << "[DEBUG2] handle ArrayConstruct*: \n\t" << aop->toString()
-              << "\n\t" << aop->out()->toString() << std::endl;
-    alloc_set_.emplace(aop->out());
-
     if (!print_inline_) {
       indent() << gen(aop->out()) << " = ";
     }
@@ -2803,9 +2792,6 @@ class CudaKernelGenerator : private kir::ConstIrVisitor {
 
   void handle(const kir::Allocate* alloc) final {
     const auto buffer_dtype = alloc->buffer()->dtype();
-
-    std::cout << "[DEBUG2] handle kir::Allocate* - " << alloc->toString()
-              << std::endl;
 
     NVF_ERROR(alloc->buffer() != nullptr);
     alloc_set_.emplace(alloc->buffer());

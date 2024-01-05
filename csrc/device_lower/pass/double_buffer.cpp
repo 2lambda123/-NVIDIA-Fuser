@@ -522,12 +522,132 @@ class DoubleBufferInserter : private kir::ExprMutator {
       return;
     }
 
-    insert(loop, it->second);
+    const auto has_bulk = std::any_of(
+        it->second.begin(), it->second.end(), ir_utils::isCpAsyncBulk);
+
+    if (has_bulk) {
+      insertWithTmaLoads(loop, it->second);
+    } else {
+      insert(loop, it->second);
+    }
     processed_loop_ = loop;
     insertion_info_.erase(loop);
   }
 
   void insert(
+      kir::ForLoop* double_buffer_loop,
+      const std::vector<Expr*>& loads) {
+    auto prologue_loop = DoubleBufferLoopCloner::clone(
+        double_buffer_loop, loads, DoubleBufferLoopStage::Prolog);
+    registerInsertBefore(double_buffer_loop, prologue_loop);
+
+    auto write_to_smem =
+        std::any_of(loads.begin(), loads.end(), [](const Expr* expr) {
+          return expr->output(0)->as<TensorView>()->getMemoryType() ==
+              MemoryType::Shared;
+        });
+
+    // RAW sync is not inserted for double buffered tensors. The only
+    // exception is the prologue load.
+    bool has_cpasync = false;
+    if (write_to_smem) {
+      // Here the initial sync before entering double buffer loop is
+      //  inserted.
+
+      // If any of the double buffered tensor in this double buffer
+      //  loop is async copy. We want to wait for the gmem loads to
+      //  finish before synchronizing the block.
+      if (std::any_of(loads.begin(), loads.end(), ir_utils::isCpAsyncOp)) {
+        auto stage_depth =
+            GpuLower::current()->doubleBufferInfo().getStageDepthFor(
+                double_buffer_loop->iter_domain());
+        auto cp_async_wait = IrBuilder::create<kir::AsyncWait>(
+            AsyncOpType::CpAsync, stage_depth - 2);
+        prologue_loop->body().push_back(
+            IrBuilder::create<kir::AsyncCommit>(AsyncOpType::CpAsync));
+        registerInsertBefore(double_buffer_loop, cp_async_wait);
+        has_cpasync = true;
+      }
+
+      // Insert the initial block sync before entering main loop.
+      if (std::any_of(loads.begin(), loads.end(), [](Expr* expr) {
+            return GpuLower::current()
+                ->syncMap()
+                ->needsRawSync(ir_utils::getTvOutput(expr))
+                .hasTID();
+          })) {
+        // If any of the double buffered loads require sync, as indicated
+        //  by sync info map, insert the sync before entering the double buffer
+        //  loop.
+        // TODO:
+        //  Currently not supporting double buffer in gmem, but short to mid
+        //  term not yet a priority to go for this case.
+        auto sync = IrBuilder::create<kir::BlockSync>(false);
+        registerInsertBefore(double_buffer_loop, sync);
+      }
+    }
+
+    auto main_loop = DoubleBufferLoopCloner::clone(
+        double_buffer_loop, loads, DoubleBufferLoopStage::Main);
+
+    registerReplace(double_buffer_loop, main_loop);
+
+    // Insert the wait instruction in this pass instead
+    //  of relying on WAR sync pass to do it.
+    // The WAR sync pass today would insert the wait function
+    //  exactly where we need it but the purpose of this wait
+    //  insertion isn't exactly WAR protection.
+    //
+    // TODO: [Double Buffer Sync]
+    //  We might eventually want to move the block sync inserted
+    //   by WAR pass here as well since this sync insertion is kind
+    //   of both WAR and RAW (or neither RAW nor WAR, depends
+    //   on how we look at it).
+    // Eg. in the case when a intermediate
+    //   tensor is double buffered.
+    //
+    //  __block_sync();    // This is the initial sync
+    //  For i in ...       // Double buffer loop
+    //     A[i%2] = ...;
+    //     ...  = A[1-i%2];
+    //     __block_sync();  // sync within loop
+    //     ...
+    //  The "sync within loop" can be placed anywhere in the
+    //   double buffer loop while in the case of RAW and WAR
+    //   there'd be extra insertion point restrictions.
+    //  We are currently not actively exploring opportunities
+    //   with this property of "double buffer sync" so this
+    //   is more conceptual at the moment, aka low priority.
+    if (has_cpasync) {
+      insertCpAsyncCommitWaitInMainLoop(main_loop, loads);
+    }
+
+    if (requireEpilogue(loads)) {
+      // In the case where the main loop is trivial (for example, ldmatrix in
+      // matmul kernel), we need to be careful when copying epilog loop. For
+      // example, if the main loop is:
+      //   for (int i = 0; i < 1; ++i) {
+      //     ...
+      //     float T1[2];
+      //     T1 = ...
+      //     ...
+      //   }
+      // Because trivial loop is not generated, the allocation of T1 will be one
+      // level above in the generated scope. So when we copy epilog, we need to
+      // make sure we don't copy these allocation so that there is no duplicate
+      // allocation.
+      std::unordered_set<Expr*> alloc_in_main;
+      getAllocInTrivialLoop(main_loop, alloc_in_main);
+      auto epilogue_loop = DoubleBufferLoopCloner::clone(
+          double_buffer_loop,
+          loads,
+          DoubleBufferLoopStage::Epilog,
+          alloc_in_main);
+      registerInsertAfter(double_buffer_loop, epilogue_loop);
+    }
+  }
+
+  void insertWithTmaLoads(
       kir::ForLoop* double_buffer_loop,
       const std::vector<Expr*>& loads) {
     auto prologue_loop = DoubleBufferLoopCloner::clone(
@@ -541,6 +661,10 @@ class DoubleBufferInserter : private kir::ExprMutator {
           std::any_of(loads.begin(), loads.end(), ir_utils::isCpAsyncBulkStore);
       std::cout << "[DEBUG] has_bulk_g2s(" << has_bulk_g2s << "), has_bulk_s2g("
                 << has_bulk_s2g << ")\n";
+
+      NVF_ERROR(
+          !has_bulk_s2g,
+          "S2G TMA load operation is not supported by Double buferring pass");
 
       if (has_bulk_g2s) {
         std::vector<Expr*> exprs;
