@@ -216,6 +216,12 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
     auto stop = double_buffer_loop_->stop();
     auto stage_depth = getStageDepthFor(double_buffer_loop_);
 
+#if 1
+    {
+      std::cout << "[DEBUG][" << __LINE__ << "] Cloning " << loop_type_
+                << " loop - start" << std::endl;
+    }
+#endif
     if (loop_type_ == DoubleBufferLoopStage::Prolog) {
       NVF_ERROR(start->isZeroInt());
       stop = SimplifyingIrBuilder::create<Val>(
@@ -255,6 +261,12 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
 #endif
 
     handle(double_buffer_loop_);
+#if 1
+    {
+      std::cout << "[DEBUG][" << __LINE__ << "] Cloning " << loop_type_
+                << " loop - end" << std::endl;
+    }
+#endif
   }
 
   void handle(kir::ForLoop* fl) final {
@@ -298,8 +310,51 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
 
     NVF_ERROR(!cloned_scopes_.empty());
 
+    // Checks if load expressions uses TMA / are bulk loads
+    const auto has_tma_load_expr = std::any_of(
+        double_buffer_load_exprs_.begin(),
+        double_buffer_load_exprs_.end(),
+        ir_utils::isCpAsyncBulkLoad);
+
+    // Should the Expr be cloned to prolog loop?
+    const auto required_in_prolog = [&has_tma_load_expr](Expr* expr) {
+      if (!has_tma_load_expr) {
+        return false;
+      }
+      if (expr->isA<kir::Allocate>()) {
+        const kir::Allocate* alloc_expr = dynamic_cast<kir::Allocate*>(expr);
+        const Val* buffer_val = alloc_expr->buffer();
+        if (buffer_val->isA<TensorView>()) {
+          const TensorView* buffer_tv =
+              dynamic_cast<const TensorView*>(buffer_val);
+          return buffer_tv->isMBarrierPlaceholder();
+        }
+      }
+      // mbarrier init must be in prolog loop, expr should be removed from main
+      // loop
+      if (expr->isA<kir::MBarrierInit>()) {
+        return true;
+      }
+      return false;
+    }(expr);
+
+    // Should the Expr be cloned to prolog loop?
+    const auto required_in_epilogue = [&has_tma_load_expr](Expr* expr) {
+      if (!has_tma_load_expr) {
+        return false;
+      }
+      // mbarrier invalidate must be in prolog loop, expr should be removed from
+      // main loop
+      if (expr->isA<kir::MBarrierInvalidate>()) {
+        return true;
+      }
+      return false;
+    }(expr);
+
     if (loop_type_ == DoubleBufferLoopStage::Main) {
-      cloned_scopes_.back()->push_back(expr);
+      if (!required_in_prolog && !required_in_epilogue) {
+        cloned_scopes_.back()->push_back(expr);
+      }
       return;
     }
 
@@ -318,19 +373,23 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
         });
 
 #if 0
-        {
-          std::cout << "[DEBUG][" << __LINE__ << "] handling of expr: (" << (void*)expr << "), is_bulk_helper_expr (" << is_bulk_mbarier_allocation << ")\n";
-          std::cout << expr->toString(4) << std::endl;
-        }
+    {
+      std::cout << "[DEBUG][" << __LINE__ << "] handling of expr: (" << (void*)expr << ") - is cp async bulk load? (" << has_tma_load_expr << ")\n";
+      std::cout << expr->toString(4) << std::endl;
+    }
 #endif
 
     if ((loop_type_ == DoubleBufferLoopStage::Prolog &&
          is_double_buffer_load_expr) ||
+        (loop_type_ == DoubleBufferLoopStage::Prolog && required_in_prolog) ||
         (loop_type_ == DoubleBufferLoopStage::Epilog &&
          !is_double_buffer_load_expr)) {
-#if 0
+#if 1
       {
-        std::cout << "[DEBUG][" << __LINE__ << "] handling of expr: (" << (void*)expr << ") - added to clonned scope in '" << cloned_top_level_loop_->doubleBufferLoopStage() << "' loop\n";
+        std::cout << "[DEBUG][" << __LINE__ << "] handling of expr: ("
+                  << (void*)expr << ") - added to cloned scope in '"
+                  << cloned_top_level_loop_->doubleBufferLoopStage()
+                  << "' loop\n";
       }
 #endif
       cloned_scopes_.back()->push_back(expr);
@@ -654,6 +713,15 @@ class DoubleBufferInserter : private kir::ExprMutator {
         double_buffer_loop, loads, DoubleBufferLoopStage::Prolog);
     registerInsertBefore(double_buffer_loop, prologue_loop);
 
+#if 0
+    {
+      std::cout << "[DEBUG] Prolog loop, body:\n";
+      for (const auto expr: prologue_loop->body().exprs()) {
+        std::cout << "  - " << expr->toString() << std::endl;
+      }
+    }
+#endif
+
     {
       const auto has_bulk_g2s =
           std::any_of(loads.begin(), loads.end(), ir_utils::isCpAsyncBulkLoad);
@@ -669,6 +737,8 @@ class DoubleBufferInserter : private kir::ExprMutator {
       if (has_bulk_g2s) {
         std::vector<Expr*> exprs;
 #if 0
+      {
+        // Status: doesn't works
         /*
           if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
             a12[0] = mbarrier::arriveExpectTX((toSmem(T3) + a10 * 0), (uint32_t)((((ceilDiv(T0.logical_size[0LL], 32)) * 4LL) * 32LL)));
@@ -693,8 +763,9 @@ class DoubleBufferInserter : private kir::ExprMutator {
         }
         prologue_loop->body().clear();
         prologue_loop->body().push_back(ifthenelse);
+      }
 #endif
-#if 1
+#if 0
         {
           // Status: works!
           /*
@@ -725,7 +796,7 @@ class DoubleBufferInserter : private kir::ExprMutator {
           exprs.push_back(tokens_storage);
         }
 #endif
-#if 1
+#if 0
         {
           // Status: works!
           /*
@@ -757,6 +828,7 @@ class DoubleBufferInserter : private kir::ExprMutator {
 #endif
 #if 0
         {
+          // Status: doesn't works
           /*
             if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
                 for (unsigned a4 = 0; a4 < 2; ++a4) {

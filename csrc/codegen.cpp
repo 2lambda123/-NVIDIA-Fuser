@@ -164,7 +164,7 @@ class CudaKernelGenerator : private kir::ConstIrVisitor {
     codegen.genDeclaration(kernel_name);
     std::cout
         << "[DEBUG] codegen.genDeclaration(kernel_name):\n"
-        << codegen.code_.str()
+        << codegen.code_.str() << "\n"
         << "==============================================================================\n"
         << "==============================================================================\n";
     codegen.startBlock();
