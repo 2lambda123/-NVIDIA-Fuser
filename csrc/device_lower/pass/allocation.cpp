@@ -558,6 +558,7 @@ class AllocationInserter : public kir::ExprMutator {
                                  .contiguity(true)
                                  .build();
       mbarrier->setMemoryType(MemoryType::Shared);
+      mbarrier->setMBarrierPlaceholder(true);
       auto mbarrier_init = IrBuilder::create<kir::MBarrierInit>(
           mbarrier, expr->container()->oneVal(DataType::UInt32));
       auto mbarrier_inval =
